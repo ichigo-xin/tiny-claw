@@ -1,4 +1,3 @@
-// cmd/claw/main.go
 package main
 
 import (
@@ -6,41 +5,68 @@ import (
 	"log"
 	"os"
 
-	"github.com/joho/godotenv"
 	"github.com/yourname/go-tiny-claw/internal/engine"
-	"github.com/yourname/go-tiny-claw/internal/provider"
-	"github.com/yourname/go-tiny-claw/internal/tools"
+	"github.com/yourname/go-tiny-claw/internal/schema"
 )
 
-func main() {
-	_ = godotenv.Load()
+// ==========================================
+// 1. 伪造的大模型 Provider
+// ==========================================
+type mockProvider struct {
+	turn int
+}
 
-	// 确保设置了 ZHIPU_API_KEY
-	if os.Getenv("ZHIPU_API_KEY") == "" {
-		log.Fatal("请先导出 ZHIPU_API_KEY 环境变量")
+// 模拟大模型的响应：第一轮请求执行 bash，第二轮输出最终结果
+func (m *mockProvider) Generate(ctx context.Context, msgs []schema.Message, _ []schema.ToolDefinition) (*schema.Message, error) {
+	m.turn++
+	if m.turn == 1 {
+		return &schema.Message{
+			Role:    schema.RoleAssistant,
+			Content: "让我来看看当前目录下有什么文件。",
+			ToolCalls: []schema.ToolCall{
+				{ID: "call_123", Name: "bash", Arguments: []byte(`{"command": "ls -la"}`)},
+			},
+		}, nil
 	}
 
-	// 1. 获取工作区物理边界
+	return &schema.Message{
+		Role:    schema.RoleAssistant,
+		Content: "我看到了文件列表，里面包含 main.go，任务完成！",
+	}, nil
+}
+
+// ==========================================
+// 2. 伪造的 Tool Registry
+// ==========================================
+type mockRegistry struct{}
+
+func (m *mockRegistry) GetAvailableTools() []schema.ToolDefinition { return nil }
+
+func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+	// 直接返回一段伪造的终端输出
+	return schema.ToolResult{
+		ToolCallID: call.ID,
+		Output:     "-rw-r--r--  1 user group  234 Oct 24 10:00 main.go\n",
+		IsError:    false,
+	}
+}
+
+// ==========================================
+// 3. 组装运行
+// ==========================================
+func main() {
+	// 获取当前执行目录作为 WorkDir 物理边界
 	workDir, _ := os.Getwd()
 
-	// 2. 初始化真实的大脑 (指向智谱 GLM-4.5，使用上一讲的 OpenAI 适配器)
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	p := &mockProvider{}
+	r := &mockRegistry{}
 
-	// 3. 初始化真实的 Tool Registry
-	registry := tools.NewRegistry()
+	// 实例化核心引擎
+	eng := engine.NewAgentEngine(p, r, workDir)
 
-	// 4. 将真实的 ReadFile 工具挂载到注册表中
-	readFileTool := tools.NewReadFileTool(workDir)
-	registry.Register(readFileTool)
-
-	// 5. 实例化核心引擎，由于任务简单，我们关闭思考阶段 (EnableThinking = false) 以加快速度
-	eng := engine.NewAgentEngine(llmProvider, registry, workDir, false)
-
-	// 6. 下发一个必须通过真实工具才能完成的任务
-	prompt := "请调用工具读取一下当前工作区目录下 hello.txt 文件的内容，并用一句话向我总结它说了什么。"
-
-	err := eng.Run(context.Background(), prompt)
+	// 发起任务指令
+	err := eng.Run(context.Background(), "帮我检查当前目录的文件")
 	if err != nil {
-		log.Fatalf("引擎运行崩溃: %v", err)
+		log.Fatalf("引擎崩溃: %v", err)
 	}
 }
