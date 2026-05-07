@@ -34,7 +34,7 @@ class ToolResult:
 @dataclass
 class ToolDefinition:
     name: str
-    description: str
+    description: str = ""
     input_schema: dict[str, Any] = field(default_factory=dict)
 
 

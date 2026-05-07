@@ -26,11 +26,17 @@ class MockProvider(LLMProvider):
         messages: list[Message],
         available_tools: list[ToolDefinition] | None = None,
     ) -> Message:
+        if available_tools is None or len(available_tools) == 0:
+            return Message(
+                role=Role.ASSISTANT,
+                content="【推理中】目标是检查文件。我不能直接盲猜，我需要先调用 bash 工具执行 ls 命令，看看当前目录下有什么，然后再做定夺。",
+            )
+
         self.turn += 1
         if self.turn == 1:
             return Message(
                 role=Role.ASSISTANT,
-                content="让我来看看当前目录下有什么文件。",
+                content="我要执行我刚才计划的步骤了。",
                 tool_calls=[
                     ToolCall(
                         id="call_123",
@@ -42,14 +48,14 @@ class MockProvider(LLMProvider):
 
         return Message(
             role=Role.ASSISTANT,
-            content="我看到了文件列表，里面包含 main.py，任务完成！",
+            content="根据工具返回的结果，我看到了 main.py，任务圆满完成！",
         )
 
 
 class MockRegistry(Registry):
 
     def get_available_tools(self) -> list[ToolDefinition]:
-        return []
+        return [ToolDefinition(name="bash")]
 
     def execute(self, call: ToolCall) -> ToolResult:
         return ToolResult(
@@ -65,7 +71,7 @@ def main():
     p = MockProvider()
     r = MockRegistry()
 
-    eng = AgentEngine(p, r, work_dir)
+    eng = AgentEngine(p, r, work_dir, enable_thinking=True)
 
     eng.run("帮我检查当前目录的文件")
 
