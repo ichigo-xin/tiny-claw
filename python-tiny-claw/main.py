@@ -1,79 +1,68 @@
 import logging
 import os
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv():
+        logging.warning("警告: python-dotenv 未安装，将跳过 .env 文件加载")
+
 from internal.engine.loop import AgentEngine
-from internal.provider.interface import LLMProvider
-from internal.schema.message import (
-    Message,
-    Role,
-    ToolCall,
-    ToolDefinition,
-    ToolResult,
-)
+from internal.provider.claude import ClaudeProvider
+from internal.provider.openai import OpenAIProvider
+from internal.schema.message import Message, Role, ToolCall, ToolDefinition, ToolResult
 from internal.tools.registry import Registry
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
-class MockProvider(LLMProvider):
-
-    def __init__(self):
-        self.turn = 0
-
-    def generate(
-        self,
-        messages: list[Message],
-        available_tools: list[ToolDefinition] | None = None,
-    ) -> Message:
-        if available_tools is None or len(available_tools) == 0:
-            return Message(
-                role=Role.ASSISTANT,
-                content="【推理中】目标是检查文件。我不能直接盲猜，我需要先调用 bash 工具执行 ls 命令，看看当前目录下有什么，然后再做定夺。",
-            )
-
-        self.turn += 1
-        if self.turn == 1:
-            return Message(
-                role=Role.ASSISTANT,
-                content="我要执行我刚才计划的步骤了。",
-                tool_calls=[
-                    ToolCall(
-                        id="call_123",
-                        name="bash",
-                        arguments={"command": "ls -la"},
-                    ),
-                ],
-            )
-
-        return Message(
-            role=Role.ASSISTANT,
-            content="根据工具返回的结果，我看到了 main.py，任务圆满完成！",
-        )
-
-
 class MockRegistry(Registry):
 
     def get_available_tools(self) -> list[ToolDefinition]:
-        return [ToolDefinition(name="bash")]
+        return [
+            ToolDefinition(
+                name="get_weather",
+                description="获取指定城市的当前天气情况。",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                        },
+                    },
+                    "required": ["city"],
+                },
+            ),
+        ]
 
     def execute(self, call: ToolCall) -> ToolResult:
+        logger.info("  -> [Mock 工具执行] 获取 %s 的天气中...", call.name)
         return ToolResult(
             tool_call_id=call.id,
-            output="-rw-r--r--  1 user group  234 Oct 24 10:00 main.py\n",
+            output="API 返回：今天是晴天，气温 25 度。",
             is_error=False,
         )
 
 
 def main():
+    load_dotenv()
+
+    if not os.getenv("ZHIPU_API_KEY"):
+        logger.error("请先导出 ZHIPU_API_KEY 环境变量或在 .env 文件中配置")
+        return
+
     work_dir = os.getcwd()
 
-    p = MockProvider()
-    r = MockRegistry()
+    llm_provider = OpenAIProvider("glm-4.5-air")
 
-    eng = AgentEngine(p, r, work_dir, enable_thinking=True)
+    registry = MockRegistry()
 
-    eng.run("帮我检查当前目录的文件")
+    eng = AgentEngine(llm_provider, registry, work_dir, enable_thinking=False)
+
+    prompt = "我想去北京跑步，帮我查查天气适合吗？"
+
+    eng.run(prompt)
 
 
 if __name__ == "__main__":
