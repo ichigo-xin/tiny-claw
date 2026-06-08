@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"runtime"
 
 	"github.com/joho/godotenv"
 
@@ -32,15 +34,32 @@ func main() {
 	// 3. 初始化真实的 Tool Registry
 	registry := tools.NewRegistry()
 
-	// 4. 将真实的 ReadFile 工具挂载到注册表中
-	readFileTool := tools.NewReadFileTool(workDir)
-	registry.Register(readFileTool)
+	// 挂载极简工具集
+	registry.Register(tools.NewReadFileTool(workDir))
+	registry.Register(tools.NewWriteFileTool(workDir))
 
-	// 5. 实例化核心引擎，由于任务简单，我们关闭思考阶段 (EnableThinking = false) 以加快速度
+	// 根据操作系统注册对应的命令执行工具
+	if runtime.GOOS == "windows" {
+		registry.Register(tools.NewPowerShellTool(workDir))
+	} else {
+		registry.Register(tools.NewBashTool(workDir))
+	}
+
+	// 实例化核心引擎，关闭慢思考阶段，享受 YOLO 急速模式
 	eng := engine.NewAgentEngine(llmProvider, registry, workDir, false)
 
-	// 6. 下发一个必须通过真实工具才能完成的任务
-	prompt := "请调用工具读取一下当前工作区目录下 hello.txt 文件的内容，并用一句话向我总结它说了什么。"
+	// 发起一个需要连贯物理动作的任务
+	shellTool := "powershell"
+	if runtime.GOOS != "windows" {
+		shellTool = "bash"
+	}
+
+	prompt := fmt.Sprintf(`
+    请帮我执行以下操作：
+    1. 用 %s 查看一下我当前电脑的 Go 版本。
+    2. 帮我写一个简单的 helloworld.go 文件，输出 "Hello, go-tiny-claw!"。
+    3. 用 %s 编译并运行这个 go 文件，确认它能正常工作。
+    `, shellTool, shellTool)
 
 	err := eng.Run(context.Background(), prompt)
 	if err != nil {
