@@ -12,6 +12,7 @@ from internal.engine.loop import AgentEngine
 from internal.provider.openai import OpenAIProvider
 from internal.tools import (
     new_bash_tool,
+    new_edit_file_tool,
     new_powershell_tool,
     new_read_file_tool,
     new_registry,
@@ -40,18 +41,19 @@ def main():
 
     if platform.system() == "Windows":
         registry.register(new_powershell_tool(work_dir))
-        shell_tool = "powershell"
     else:
         registry.register(new_bash_tool(work_dir))
-        shell_tool = "bash"
+
+    registry.register(new_edit_file_tool(work_dir))
 
     eng = AgentEngine(llm_provider, registry, work_dir, enable_thinking=False)
 
-    prompt = f"""
-    请帮我执行以下操作：
-    1. 用 {shell_tool} 查看一下当前电脑的 Python 版本。
-    2. 帮我写一个简单的 helloworld.py 文件，输出 "Hello, python-tiny-claw!"。
-    3. 用 {shell_tool} 运行这个 python 文件，确认它能正常工作。
+    prompt = """
+    我当前目录下有一个 server.py 文件。
+    请帮我把里面 "TODO: 增加鉴权逻辑" 下面的那个 if 语句，整个替换为：
+    if user is None:
+        print("Forbidden!")
+        return
     """
 
     eng.run(prompt)
