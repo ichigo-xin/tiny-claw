@@ -46,14 +46,12 @@ def main():
 
     registry.register(new_edit_file_tool(work_dir))
 
-    eng = AgentEngine(llm_provider, registry, work_dir, enable_thinking=False)
+    # 开启慢思考，促使大模型一次性规划出并行的工具调用
+    eng = AgentEngine(llm_provider, registry, work_dir, enable_thinking=True)
 
     prompt = """
-    我当前目录下有一个 server.py 文件。
-    请帮我把里面 "TODO: 增加鉴权逻辑" 下面的那个 if 语句，整个替换为：
-    if user is None:
-        print("Forbidden!")
-        return
+    我当前目录下有 a.txt, b.txt, c.txt 三个文件。(如果没有请忽略找不到的报错)
+    为了节省时间，请你同时一次性利用工具读取这三个文件，并将它们的内容综合起来告诉我。
     """
 
     eng.run(prompt)

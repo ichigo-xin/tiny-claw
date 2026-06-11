@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from internal.provider.interface import LLMProvider
 from internal.schema.message import Message, Role
@@ -46,41 +47,61 @@ class AgentEngine:
 
             available_tools = self.registry.get_available_tools()
 
+            # Phase 1: 慢思考阶段
             if self.enable_thinking:
                 logger.info("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
 
                 think_resp = self.provider.generate(context_history, None)
                 if think_resp.content:
-                    print(f"🧠 [内部思考 Trace]: {think_resp.content}")
+                    print(f"🧠 [内部思考 Trace]: \n{think_resp.content}")
                     context_history.append(think_resp)
 
+            # Phase 2: 行动阶段
             logger.info("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
 
             action_resp = self.provider.generate(context_history, available_tools)
             context_history.append(action_resp)
 
             if action_resp.content:
-                print(f"🤖 [对外回复]:\n{action_resp.content}")
+                print(f"🤖 [对外回复]: \n{action_resp.content}")
 
             if not action_resp.tool_calls:
                 logger.info("[Engine] 模型未请求调用工具，任务宣告完成。")
                 break
 
-            logger.info("[Engine] 模型请求调用 %d 个工具...", len(action_resp.tool_calls))
+            logger.info("[Engine] 模型请求并发调用 %d 个工具...", len(action_resp.tool_calls))
 
-            for tool_call in action_resp.tool_calls:
-                logger.info("  -> 🛠️ 执行工具: %s, 参数: %s", tool_call.name, tool_call.arguments)
+            # ================= 并发执行逻辑 =================
 
-                result = self.registry.execute(tool_call)
+            # 预分配列表以保证顺序
+            observation_msgs: list[Message | None] = [None] * len(action_resp.tool_calls)
+
+            def _execute_tool(idx: int, call):
+                logger.info("  -> [Thread-%d] 🛠️ 触发并行执行: %s", idx, call.name)
+                result = self.registry.execute(call)
 
                 if result.is_error:
-                    logger.info("  -> ❌ 工具执行报错: %s", result.output)
+                    logger.info("  -> [Thread-%d] ❌ 工具执行报错: %s", idx, result.output)
                 else:
-                    logger.info("  -> ✅ 工具执行成功 (返回 %d 字节)", len(result.output.encode("utf-8")))
+                    logger.info("  -> [Thread-%d] ✅ 工具执行成功 (返回 %d 字节)", idx, len(result.output.encode("utf-8")))
 
-                observation_msg = Message(
+                observation_msgs[idx] = Message(
                     role=Role.USER,
                     content=result.output,
-                    tool_call_id=tool_call.id,
+                    tool_call_id=call.id,
                 )
-                context_history.append(observation_msg)
+                return idx
+
+            with ThreadPoolExecutor(max_workers=len(action_resp.tool_calls)) as executor:
+                futures = [
+                    executor.submit(_execute_tool, i, tool_call)
+                    for i, tool_call in enumerate(action_resp.tool_calls)
+                ]
+                for future in as_completed(futures):
+                    future.result()
+
+            logger.info("[Engine] 所有并发工具执行完毕，开始聚合观察结果 (Observation)...")
+
+            # 按序追加回 Context
+            for obs in observation_msgs:
+                context_history.append(obs)
