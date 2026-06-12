@@ -8,8 +8,8 @@ import (
 	"runtime"
 
 	"github.com/joho/godotenv"
-
 	"github.com/yourname/go-tiny-claw/internal/engine"
+	"github.com/yourname/go-tiny-claw/internal/feishu"
 	"github.com/yourname/go-tiny-claw/internal/provider"
 	"github.com/yourname/go-tiny-claw/internal/tools"
 )
@@ -23,6 +23,13 @@ func main() {
 	// 确保已设置 ZHIPU_API_KEY
 	if os.Getenv("ZHIPU_API_KEY") == "" {
 		log.Fatal("请先导出 ZHIPU_API_KEY 环境变量或在 .env 文件中配置")
+	}
+
+	// 确保已设置飞书凭证
+	feishuAppID := os.Getenv("FEISHU_APP_ID")
+	feishuAppSecret := os.Getenv("FEISHU_APP_SECRET")
+	if feishuAppID == "" || feishuAppSecret == "" {
+		log.Fatal("请先导出 FEISHU_APP_ID 和 FEISHU_APP_SECRET 环境变量或在 .env 文件中配置")
 	}
 
 	workDir, _ := os.Getwd()
@@ -47,16 +54,15 @@ func main() {
 	// 【新增挂载】
 	registry.Register(tools.NewEditFileTool(workDir))
 
-	// 开启慢思考，促使大模型一次性规划出并行的工具调用
+	// 开启慢思考
 	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true)
 
-	prompt := `
-	我当前目录下有 a.txt, b.txt, c.txt 三个文件。(如果没有请忽略找不到的报错)
-	为了节省时间，请你同时一次性利用工具读取这三个文件，并将它们的内容综合起来告诉我。
-	`
+	// 2. 初始化飞书 Bot，通过长连接方式启动
+	bot := feishu.NewFeishuBot(feishuAppID, feishuAppSecret, eng)
 
-	err := eng.Run(context.Background(), prompt)
+	// 3. 启动长连接（WebSocket），无需 HTTP 服务器，无需内网穿透
+	err := bot.Start(context.Background())
 	if err != nil {
-		log.Fatalf("引擎运行崩溃: %v", err)
+		log.Fatalf("飞书长连接启动失败: %v", err)
 	}
 }

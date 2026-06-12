@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
 
+from internal.engine.reporter import Reporter
 from internal.provider.interface import LLMProvider
 from internal.schema.message import Message, Role
 from internal.tools.registry import RegistryImpl as Registry
@@ -24,14 +26,13 @@ class AgentEngine:
         self.work_dir = work_dir
         self.enable_thinking = enable_thinking
 
-    def run(self, user_prompt: str) -> None:
+    def run(self, user_prompt: str, reporter: Optional[Reporter] = None) -> None:
         logger.info("[Engine] 引擎启动，锁定工作区: %s", self.work_dir)
-        logger.info("[Engine] 慢思考模式 (Thinking Phase): %s", self.enable_thinking)
 
         context_history: list[Message] = [
             Message(
                 role=Role.SYSTEM,
-                content="You are python-tiny-claw, an expert coding assistant. You have full access to tools in the workspace.",
+                content="You are python-tiny-claw, an expert coding assistant.",
             ),
             Message(
                 role=Role.USER,
@@ -43,47 +44,41 @@ class AgentEngine:
 
         while True:
             turn_count += 1
-            logger.info("\n========== [Turn %d] 开始 ==========", turn_count)
-
             available_tools = self.registry.get_available_tools()
 
-            # Phase 1: 慢思考阶段
+            # ================= Phase 1: Thinking =================
             if self.enable_thinking:
-                logger.info("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
+                if reporter is not None:
+                    reporter.on_thinking()
 
                 think_resp = self.provider.generate(context_history, None)
                 if think_resp.content:
-                    print(f"🧠 [内部思考 Trace]: \n{think_resp.content}")
                     context_history.append(think_resp)
 
-            # Phase 2: 行动阶段
-            logger.info("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
-
+            # ================= Phase 2: Action =================
             action_resp = self.provider.generate(context_history, available_tools)
             context_history.append(action_resp)
 
-            if action_resp.content:
-                print(f"🤖 [对外回复]: \n{action_resp.content}")
+            if action_resp.content and reporter is not None:
+                reporter.on_message(action_resp.content)
 
+            # ================= 执行退出与并发控制 =================
             if not action_resp.tool_calls:
-                logger.info("[Engine] 模型未请求调用工具，任务宣告完成。")
                 break
 
-            logger.info("[Engine] 模型请求并发调用 %d 个工具...", len(action_resp.tool_calls))
-
-            # ================= 并发执行逻辑 =================
-
-            # 预分配列表以保证顺序
             observation_msgs: list[Message | None] = [None] * len(action_resp.tool_calls)
 
             def _execute_tool(idx: int, call):
-                logger.info("  -> [Thread-%d] 🛠️ 触发并行执行: %s", idx, call.name)
+                if reporter is not None:
+                    reporter.on_tool_call(call.name, call.arguments)
+
                 result = self.registry.execute(call)
 
-                if result.is_error:
-                    logger.info("  -> [Thread-%d] ❌ 工具执行报错: %s", idx, result.output)
-                else:
-                    logger.info("  -> [Thread-%d] ✅ 工具执行成功 (返回 %d 字节)", idx, len(result.output.encode("utf-8")))
+                if reporter is not None:
+                    display_output = result.output
+                    if len(display_output) > 200:
+                        display_output = display_output[:200] + "... (已截断)"
+                    reporter.on_tool_result(call.name, display_output, result.is_error)
 
                 observation_msgs[idx] = Message(
                     role=Role.USER,
@@ -100,8 +95,5 @@ class AgentEngine:
                 for future in as_completed(futures):
                     future.result()
 
-            logger.info("[Engine] 所有并发工具执行完毕，开始聚合观察结果 (Observation)...")
-
-            # 按序追加回 Context
             for obs in observation_msgs:
                 context_history.append(obs)
