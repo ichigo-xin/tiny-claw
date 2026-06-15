@@ -9,7 +9,6 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/yourname/go-tiny-claw/internal/engine"
-	"github.com/yourname/go-tiny-claw/internal/feishu"
 	"github.com/yourname/go-tiny-claw/internal/provider"
 	"github.com/yourname/go-tiny-claw/internal/tools"
 )
@@ -57,12 +56,17 @@ func main() {
 	// 开启慢思考
 	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true)
 
-	// 2. 初始化飞书 Bot，通过长连接方式启动
-	bot := feishu.NewFeishuBot(feishuAppID, feishuAppSecret, eng)
+	// 【注入新实现的终端输出器】
+	reporter := engine.NewTerminalReporter()
 
-	// 3. 启动长连接（WebSocket），无需 HTTP 服务器，无需内网穿透
-	err := bot.Start(context.Background())
+	prompt := `
+    我需要在当前目录下新建一个 ping.go，提供一个简单的 http ping 接口。
+    写完之后，帮我把代码用 git 提交一下。
+    `
+
+	err := eng.Run(context.Background(), prompt, reporter)
 	if err != nil {
-		log.Fatalf("飞书长连接启动失败: %v", err)
+		log.Fatalf("引擎运行崩溃: %v", err)
 	}
+
 }
