@@ -4,6 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
+from internal.context.composer import PromptComposer
 from internal.engine.reporter import Reporter
 from internal.provider.interface import LLMProvider
 from internal.schema.message import Message, Role
@@ -25,15 +26,16 @@ class AgentEngine:
         self.registry = registry
         self.work_dir = work_dir
         self.enable_thinking = enable_thinking
+        self.composer = PromptComposer(work_dir)
 
     def run(self, user_prompt: str, reporter: Optional[Reporter] = None) -> None:
         logger.info("[Engine] 引擎启动，锁定工作区: %s", self.work_dir)
 
+        # 动态组装 System Prompt，彻底替换掉以前硬编码的面条提示词
+        system_msg = self.composer.build()
+
         context_history: list[Message] = [
-            Message(
-                role=Role.SYSTEM,
-                content="You are python-tiny-claw, an expert coding assistant.",
-            ),
+            system_msg,
             Message(
                 role=Role.USER,
                 content=user_prompt,

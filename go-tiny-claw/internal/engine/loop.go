@@ -48,8 +48,8 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 		turnCount++
 		availableTools := e.registry.GetAvailableTools()
 
-		// ================= Phase 1: Thinking =================
 		if e.EnableThinking {
+			// ================= Phase 1: Thinking =================
 			if reporter != nil {
 				// 【触发 Reporter】: 开始慢思考
 				reporter.OnThinking(ctx)
