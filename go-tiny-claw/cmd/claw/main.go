@@ -34,7 +34,7 @@ func main() {
 	workDir, _ := os.Getwd()
 
 	// 2. 初始化真实的大脑 (指向智谱 GLM-4.5，使用上一讲的 OpenAI 适配器)
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	llmProvider := provider.NewZhipuOpenAIProvider("glm-5.1")
 
 	// 3. 初始化真实的 Tool Registry
 	registry := tools.NewRegistry()
