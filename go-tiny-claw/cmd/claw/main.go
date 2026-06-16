@@ -5,11 +5,14 @@ import (
 	"context"
 	"log"
 	"os"
-	"runtime"
+	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/yourname/go-tiny-claw/internal/engine"
 	"github.com/yourname/go-tiny-claw/internal/provider"
+	"github.com/yourname/go-tiny-claw/internal/schema"
 	"github.com/yourname/go-tiny-claw/internal/tools"
 )
 
@@ -24,49 +27,61 @@ func main() {
 		log.Fatal("请先导出 ZHIPU_API_KEY 环境变量或在 .env 文件中配置")
 	}
 
-	// 确保已设置飞书凭证
-	feishuAppID := os.Getenv("FEISHU_APP_ID")
-	feishuAppSecret := os.Getenv("FEISHU_APP_SECRET")
-	if feishuAppID == "" || feishuAppSecret == "" {
-		log.Fatal("请先导出 FEISHU_APP_ID 和 FEISHU_APP_SECRET 环境变量或在 .env 文件中配置")
+	if os.Getenv("ZHIPU_API_KEY") == "" {
+		log.Fatal("请先导出 ZHIPU_API_KEY 环境变量")
 	}
 
-	workDir, _ := os.Getwd()
+	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air") // 智谱或 Claude
 
-	// 2. 初始化真实的大脑 (指向智谱 GLM-4.5，使用上一讲的 OpenAI 适配器)
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-5.1")
+	// 使用项目根目录下的 tmp 子目录作为工作区 (要求程序工作目录为 go-tiny-claw/)
+	frontWorkDir := filepath.Join("tmp", "project_front")
+	backWorkDir := filepath.Join("tmp", "project_back")
 
-	// 3. 初始化真实的 Tool Registry
 	registry := tools.NewRegistry()
+	registry.Register(tools.NewReadFileTool(frontWorkDir))
 
-	// 挂载极简工具集
-	registry.Register(tools.NewReadFileTool(workDir))
-	registry.Register(tools.NewWriteFileTool(workDir))
-
-	// 根据操作系统注册对应的命令执行工具
-	if runtime.GOOS == "windows" {
-		registry.Register(tools.NewPowerShellTool(workDir))
-	} else {
-		registry.Register(tools.NewBashTool(workDir))
-	}
-
-	// 【新增挂载】
-	registry.Register(tools.NewEditFileTool(workDir))
-
-	// 开启慢思考
-	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true)
-
-	// 【注入新实现的终端输出器】
+	// 引擎本身变成无状态的，它不绑定 WorkDir（仅适用于本讲演示）
+	eng := engine.NewAgentEngine(llmProvider, registry, false)
 	reporter := engine.NewTerminalReporter()
 
-	prompt := `
-    我需要在当前目录下新建一个 ping.go，提供一个简单的 http ping 接口。
-    写完之后，帮我把代码用 git 提交一下。
-    `
+	var wg sync.WaitGroup
 
-	err := eng.Run(context.Background(), prompt, reporter)
-	if err != nil {
-		log.Fatalf("引擎运行崩溃: %v", err)
-	}
+	// ================= 模拟并发场景 1：飞书前端群 =================
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sessionA := engine.GlobalSessionMgr.GetOrCreate("chat_front_001", frontWorkDir)
 
+		// 回合 1：获取机密
+		log.Println("\n>>> 🙋‍♂️ [Session A / Turn 1]: 帮我看看 README.md 里记录了什么密钥？")
+		sessionA.Append(schema.Message{Role: schema.RoleUser, Content: "帮我看看 README.md 里记录了什么密钥？"})
+		_ = eng.Run(context.Background(), sessionA, reporter)
+
+		// 故意制造大量“废话”对话，刷掉记忆 (假设 Working Memory Limit=6)
+		for i := 0; i < 6; i++ {
+			sessionA.Append(schema.Message{Role: schema.RoleUser, Content: "这只是一句闲聊占位符。"})
+			sessionA.Append(schema.Message{Role: schema.RoleAssistant, Content: "好的，收到闲聊。"})
+		}
+
+		// 回合 2：验证记忆截断 (此时第一轮的密钥已经被挤出 Working Memory 了！)
+		log.Println("\n>>> 🙋‍♂️ [Session A / Turn 2]: 请直接告诉我，刚才第一轮你查到的那个密钥是什么？")
+		sessionA.Append(schema.Message{Role: schema.RoleUser, Content: "请直接告诉我，刚才第一轮你查到的那个密钥是什么？不准调用工具！"})
+		_ = eng.Run(context.Background(), sessionA, reporter)
+	}()
+
+	// ================= 模拟并发场景 2：飞书后端群 =================
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// 稍微错开一点时间发起请求
+		time.Sleep(1 * time.Second)
+
+		sessionB := engine.GlobalSessionMgr.GetOrCreate("chat_back_002", backWorkDir)
+
+		log.Println("\n>>> 🙋‍♂️ [Session B]: 别人查到了一个密钥，你这里能看到吗？")
+		sessionB.Append(schema.Message{Role: schema.RoleUser, Content: "别人查到了一个密钥，你这里能看到吗？不准调用工具！"})
+		_ = eng.Run(context.Background(), sessionB, reporter)
+	}()
+
+	wg.Wait()
 }
