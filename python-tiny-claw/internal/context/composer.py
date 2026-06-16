@@ -17,7 +17,7 @@ class PromptComposer:
         parts: list[str] = []
 
         # 1. 极简内核 (Minimal Core)
-        parts.append(`# 核心身份
+        parts.append("""# 核心身份
 你名叫 python-tiny-claw，一个由驾驭工程驱动的骨灰级研发助手。
 你具备极简主义哲学，拒绝废话。你能通过系统提供的内置工具，创建、读取、修改和执行工作区中的代码。
 
@@ -28,7 +28,7 @@ class PromptComposer:
 4. 无论何时你需要写代码或创建文件，都要直接使用 write_file 工具。
 5. 遇到工具执行报错时，仔细阅读 stderr，尝试自己修正命令并重试。
 6. 始终用中文回复，以便传达你的进展和想法。
-`)
+""")
 
         # 2. 外部化状态：加载项目专属规范 (AGENTS.md)
         agents_md_path = Path(self.work_dir) / "AGENTS.md"
