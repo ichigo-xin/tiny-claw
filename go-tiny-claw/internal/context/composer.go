@@ -1,4 +1,3 @@
-// internal/context/composer.go
 package context
 
 import (
