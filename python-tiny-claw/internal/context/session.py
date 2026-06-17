@@ -17,20 +17,14 @@ class Session:
         self.created_at: float = time.time()
         self.updated_at: float = time.time()
 
-        # 存放此 Session 中所有的用户输入、大模型回复和工具调用结果
         self._history: list[Message] = []
-        self._lock = threading.RLock()  # 读写锁，防止并发读写历史时发生 Data Race
+        self._lock = threading.RLock()
 
     def append(self, *msgs: Message) -> None:
         """线程安全地向 Session 中追加消息"""
         with self._lock:
             self._history.extend(msgs)
             self.updated_at = time.time()
-
-            # 【持久化预留点】：在真实的工业级实现中（如 Claude Code），
-            # 我们会在这里将 self._history 以 JSONL 的格式 Append 到
-            # workDir/.claw/sessions/xxx.jsonl 中。
-            # self.save_to_disk()
 
     def get_working_memory(self, limit: int) -> list[Message]:
         """get_working_memory 是驾驭工程的核心！
@@ -41,10 +35,8 @@ class Session:
         with self._lock:
             total = len(self._history)
             if total <= limit or limit <= 0:
-                # 如果历史总量小于限制，或者不设限，全量返回 (需要深拷贝以防外部修改)
                 return list(self._history)
 
-            # 截取最近的 limit 条消息
             res = list(self._history[total - limit:])
 
         # 【驾驭防线】：大模型 API 强制要求历史消息的连续性！
@@ -90,5 +82,5 @@ class SessionManager:
             return self._sessions.get(id)
 
 
-# 全局单例，对应 go 项目中的 engine.GlobalSessionMgr
+# 全局单例，对应 go 项目中的 context.GlobalSessionMgr
 global_session_mgr = SessionManager()

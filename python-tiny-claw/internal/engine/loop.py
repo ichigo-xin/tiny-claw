@@ -4,9 +4,10 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
+from internal.context.compactor import Compactor
 from internal.context.composer import PromptComposer
+from internal.context.session import Session
 from internal.engine.reporter import Reporter
-from internal.engine.session import Session
 from internal.provider.interface import LLMProvider
 from internal.schema.message import Message, Role
 from internal.tools.registry import RegistryImpl as Registry
@@ -26,6 +27,7 @@ class AgentEngine:
         self.provider = provider
         self.registry = registry
         self.enable_thinking = enable_thinking
+        self.compactor = Compactor(max_chars=3000, retain_last_msgs=6)
 
     def run(self, session: Session, reporter: Optional[Reporter] = None) -> None:
         """【核心改造】: 移除 user_prompt 参数，改为接收一个具体的 Session 实例
@@ -36,46 +38,47 @@ class AgentEngine:
         """
         logger.info("[Engine] 唤醒会话 [%s]，锁定工作区: %s", session.id, session.work_dir)
 
-        # 根据当前 Session 的工作区，动态组装最新的 System Prompt
         composer = PromptComposer(session.work_dir)
         system_msg = composer.build()
 
         while True:
             available_tools = self.registry.get_available_tools()
 
-            # 1. 【上下文组装】: System Prompt + 截取最近的 6 条消息作为 Working Memory
-            # 在实际业务中，由于工具返回结果可能很长，短期工作记忆往往设为 6-10 条足以维系连贯对话
-            working_memory = session.get_working_memory(6)
+            # 1. 从 Session 提取出近期的 Working Memory (例如最近 20 条，给压缩器留下充足的判断空间)
+            working_memory = session.get_working_memory(20)
 
             context_history: list[Message] = [system_msg, *working_memory]
 
-            # 2. ================= Phase 1: Thinking =================
+            # 2. 【核心注入点】: 在向 Provider 发起推理前，过一遍内存压缩器！
+            # 无论你带出了多少上下文，如果字符总数超标，早期日志将被掩码化，超大日志将被掐头去尾
+            compacted_context = self.compactor.compact(context_history)
+
+            # 3. 后续的 Provider.Generate 全面使用被保护过的新鲜上下文 (compacted_context)
+            # ================= Phase 1: Thinking =================
             if self.enable_thinking:
                 if reporter is not None:
                     reporter.on_thinking()
 
-                think_resp = self.provider.generate(context_history, None)
+                think_resp = self.provider.generate(compacted_context, None)
                 if think_resp.content:
-                    # 将思考过程持久化到 Session 中！
                     session.append(think_resp)
-                    # 把它追加到当前这一轮的临时上下文中，供 Action 阶段使用
-                    context_history.append(think_resp)
+                    compacted_context.append(think_resp)
 
-            # 3. ================= Phase 2: Action =================
-            action_resp = self.provider.generate(context_history, available_tools)
+            # ================= Phase 2: Action =================
+            action_resp = self.provider.generate(compacted_context, available_tools)
 
-            # 将大模型的行动响应持久化到 Session 中
+            # 【驾驭精髓】：注意，写入 Session（硬盘/全量内存）的永远是全量的真实响应，不受 Compact 影响！
+            # Compact 只作用于本轮发给大模型的那个临时 Context。
             session.append(action_resp)
-            context_history.append(action_resp)
+            compacted_context.append(action_resp)
 
             if action_resp.content and reporter is not None:
                 reporter.on_message(action_resp.content)
 
-            # 如果没有工具调用，说明本次任务已完成，打破 ReAct 循环，挂起等待人类的下一条指令
             if not action_resp.tool_calls:
                 break
 
-            # 4. ================= 并发执行底层工具 =================
+            # ================= 并发执行底层工具 =================
             observation_msgs: list[Message | None] = [None] * len(action_resp.tool_calls)
 
             def _execute_tool(idx: int, call):
@@ -105,5 +108,5 @@ class AgentEngine:
                 for future in as_completed(futures):
                     future.result()
 
-            # 将所有的工具执行结果（Observation）持久化到 Session 中，开启下一轮的复盘与推理
+            # 将全量观测结果持久化到 Session 中
             session.append(*[m for m in observation_msgs if m is not None])
