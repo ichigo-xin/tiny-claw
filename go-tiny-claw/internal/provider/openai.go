@@ -1,4 +1,3 @@
-// internal/provider/openai.go
 package provider
 
 import (
@@ -14,19 +13,16 @@ import (
 )
 
 type OpenAIProvider struct {
-	client openai.Client // 值类型，非指针
+	client openai.Client
 	model  string
 }
 
-// NewZhipuOpenAIProvider 构造函数：基于 OpenAI V3 SDK，指向智谱底座
 func NewZhipuOpenAIProvider(model string) *OpenAIProvider {
 	apiKey := os.Getenv("ZHIPU_API_KEY")
 	if apiKey == "" {
 		panic("请设置 ZHIPU_API_KEY 环境变量")
 	}
-	// 核心：将官方 SDK 的地址替换为智谱的兼容端点
 	baseURL := "https://open.bigmodel.cn/api/paas/v4/"
-
 	return &OpenAIProvider{
 		client: openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
 		model:  model,
@@ -36,7 +32,6 @@ func NewZhipuOpenAIProvider(model string) *OpenAIProvider {
 func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	var openaiMsgs []openai.ChatCompletionMessageParamUnion
 
-	// 1. 翻译上下文消息
 	for _, msg := range msgs {
 		switch msg.Role {
 		case schema.RoleSystem:
@@ -44,26 +39,21 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 
 		case schema.RoleUser:
 			if msg.ToolCallID != "" {
-				// 注意：v3 新版参数顺序是 (content, toolCallID)
 				openaiMsgs = append(openaiMsgs, openai.ToolMessage(msg.Content, msg.ToolCallID))
 			} else {
 				openaiMsgs = append(openaiMsgs, openai.UserMessage(msg.Content))
 			}
-
 		case schema.RoleAssistant:
 			astParam := openai.ChatCompletionAssistantMessageParam{}
 
-			if msg.Content != "" {
-				astParam.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
-					OfString: openai.String(msg.Content),
-				}
+			// 即使是空字符串 ""，也要发给智谱，否则会触发 1214 错误码
+			astParam.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
+				OfString: openai.String(msg.Content),
 			}
 
-			// 【重要】如果历史包含 ToolCalls，必须原样放回，以维系大模型的逻辑链
 			if len(msg.ToolCalls) > 0 {
 				var toolCalls []openai.ChatCompletionMessageToolCallUnionParam
 				for _, tc := range msg.ToolCalls {
-					// OfFunction 对应 GetFunction()，字段类型严格要求为指针
 					toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallUnionParam{
 						OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
 							ID:   tc.ID,
@@ -84,16 +74,13 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		}
 	}
 
-	// 2. 翻译工具定义 (v3 新 API 特性适配)
+	// v3 新 API：ChatCompletionToolUnionParam + ChatCompletionFunctionTool()
 	var openaiTools []openai.ChatCompletionToolUnionParam
 	for _, toolDef := range availableTools {
 		var params shared.FunctionParameters
-
-		// 尝试直接断言，如果不成功则通过 JSON 往返序列化来保证类型匹配
 		if m, ok := toolDef.InputSchema.(map[string]interface{}); ok {
 			params = shared.FunctionParameters(m)
 		} else {
-			// fallback：JSON 往返序列化
 			b, _ := json.Marshal(toolDef.InputSchema)
 			_ = json.Unmarshal(b, &params)
 		}
@@ -107,13 +94,10 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		))
 	}
 
-	// 3. 构建请求并发送
 	params := openai.ChatCompletionNewParams{
 		Model:    p.model,
 		Messages: openaiMsgs,
 	}
-
-	// 【慢思考机制支撑】仅当 availableTools 存在时才挂载 Tools
 	if len(openaiTools) > 0 {
 		params.Tools = openaiTools
 	}
@@ -126,7 +110,6 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		return nil, fmt.Errorf("API 返回了空的 Choices")
 	}
 
-	// 4. 将 API Response 反向翻译为内部 schema.Message
 	choice := resp.Choices[0].Message
 	resultMsg := &schema.Message{
 		Role:    schema.RoleAssistant,
@@ -138,7 +121,7 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 			resultMsg.ToolCalls = append(resultMsg.ToolCalls, schema.ToolCall{
 				ID:        tc.ID,
 				Name:      tc.Function.Name,
-				Arguments: []byte(tc.Function.Arguments), // 提取 JSON 字符串字节
+				Arguments: []byte(tc.Function.Arguments),
 			})
 		}
 	}
