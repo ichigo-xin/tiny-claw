@@ -23,10 +23,12 @@ class AgentEngine:
         provider: LLMProvider,
         registry: Registry,
         enable_thinking: bool = False,
+        plan_mode: bool = False,
     ):
         self.provider = provider
         self.registry = registry
         self.enable_thinking = enable_thinking
+        self.plan_mode = plan_mode  # 【新增】暴露给外部的计划模式开关
         self.compactor = Compactor(max_chars=3000, retain_last_msgs=6)
 
     def run(self, session: Session, reporter: Optional[Reporter] = None) -> None:
@@ -36,9 +38,15 @@ class AgentEngine:
             session: 本次交互所属的会话，提供工作区、历史记忆与并发隔离。
             reporter: 可选的事件上报器，用于向终端/飞书等展现层推送状态。
         """
-        logger.info("[Engine] 唤醒会话 [%s]，锁定工作区: %s", session.id, session.work_dir)
+        logger.info(
+            "[Engine] 唤醒会话 [%s]，锁定工作区: %s (PlanMode: %s)",
+            session.id,
+            session.work_dir,
+            self.plan_mode,
+        )
 
-        composer = PromptComposer(session.work_dir)
+        # 在每次运行前，动态生成组装器并传入当前的 PlanMode 状态
+        composer = PromptComposer(session.work_dir, self.plan_mode)
         system_msg = composer.build()
 
         while True:

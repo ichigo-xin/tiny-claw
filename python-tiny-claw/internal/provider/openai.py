@@ -41,11 +41,9 @@ class OpenAIProvider(LLMProvider):
                         openai_messages.append({"role": "user", "content": msg.content})
                 case Role.ASSISTANT:
                     assistant_msg: dict[str, any] = {"role": "assistant"}
-                    
-                    if msg.content:
-                        assistant_msg["content"] = msg.content
-                    else:
-                        assistant_msg["content"] = None
+
+                    # 即使是空字符串 ""，也要发给智谱，否则会触发 1214 错误码
+                    assistant_msg["content"] = msg.content if msg.content else ""
                     
                     if msg.tool_calls:
                         tool_calls = []

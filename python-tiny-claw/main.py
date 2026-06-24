@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import platform
@@ -28,13 +29,22 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+    # 通过命令行参数接收用户的 prompt
+    parser = argparse.ArgumentParser(description="python-tiny-claw")
+    parser.add_argument("-prompt", dest="prompt", default="", help="要交给 Agent 执行的任务描述")
+    args = parser.parse_args()
+
+    if not args.prompt:
+        print('用法: python main.py -prompt "你的任务指令"')
+        return
+
     load_dotenv()
 
     if not os.getenv("ZHIPU_API_KEY"):
         logger.error("请先导出 ZHIPU_API_KEY 环境变量或在 .env 文件中配置")
         return
 
-    work_dir = str(Path(__file__).resolve().parent)
+    work_dir = str(Path(__file__).resolve().parent) + "/workspace"
     llm_provider = OpenAIProvider("glm-4.5-air")
 
     registry = new_registry()
@@ -48,20 +58,20 @@ def main():
 
     registry.register(new_edit_file_tool(work_dir))
 
-    eng = AgentEngine(llm_provider, registry, enable_thinking=False)
+    # 实例化引擎并开启计划模式 (plan_mode=True)
+    eng = AgentEngine(llm_provider, registry, enable_thinking=False, plan_mode=True)
     reporter = TerminalReporter()
 
-    session_id = "test_oom_protection_001"
+    # 我们使用一个固定的 SessionID，以便在多次运行之间共享基于内存的“短期工作记忆”。
+    # (在真实的 CLI 中，如果进程重启，Session 的内存历史其实是丢失的。
+    # 但这正是我们要演示的重点：即便短期内存丢失，只要 TODO.md 还在，任务就能继续！)
+    session_id = "task_web_server_01"
     sess = global_session_mgr.get_or_create(session_id, work_dir)
 
-    prompt = """
-    请帮我执行以下三个步骤：
-    1. 使用 bash 执行 echo "开始排查日志"
-    2. 使用 read_file 工具读取当前目录下的巨大文件 mock_log.txt
-    3. 使用 bash 执行 date 命令获取当前时间，并告诉我任务全部完成。
-    """
+    logger.info(">>> 🚀 收到指令: %s", args.prompt)
 
-    sess.append(Message(role=Role.USER, content=prompt))
+    # 将用户的 Prompt 压入 Session
+    sess.append(Message(role=Role.USER, content=args.prompt))
 
     try:
         eng.run(sess, reporter)
