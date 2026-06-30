@@ -1,4 +1,3 @@
-import argparse
 import logging
 import os
 import platform
@@ -29,15 +28,6 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    # 通过命令行参数接收用户的 prompt
-    parser = argparse.ArgumentParser(description="python-tiny-claw")
-    parser.add_argument("-prompt", dest="prompt", default="", help="要交给 Agent 执行的任务描述")
-    args = parser.parse_args()
-
-    if not args.prompt:
-        print('用法: python main.py -prompt "你的任务指令"')
-        return
-
     load_dotenv()
 
     if not os.getenv("ZHIPU_API_KEY"):
@@ -56,22 +46,35 @@ def main():
     else:
         registry.register(new_bash_tool(work_dir))
 
+    # 【新增挂载】
     registry.register(new_edit_file_tool(work_dir))
 
-    # 实例化引擎并开启计划模式 (plan_mode=True)
-    eng = AgentEngine(llm_provider, registry, enable_thinking=False, plan_mode=True)
+    # 关闭 Plan 模式，专注于见证它改变主意的单点纠偏过程
+    eng = AgentEngine(llm_provider, registry, enable_thinking=False, plan_mode=False)
     reporter = TerminalReporter()
 
-    # 我们使用一个固定的 SessionID，以便在多次运行之间共享基于内存的“短期工作记忆”。
-    # (在真实的 CLI 中，如果进程重启，Session 的内存历史其实是丢失的。
-    # 但这正是我们要演示的重点：即便短期内存丢失，只要 TODO.md 还在，任务就能继续！)
-    session_id = "task_web_server_01"
+    session_id = "test_recovery_001"
     sess = global_session_mgr.get_or_create(session_id, work_dir)
 
-    logger.info(">>> 🚀 收到指令: %s", args.prompt)
+    # 这是一个巨大的陷阱指令：
+    # 我们不给它查看文件的机会，直接命令它凭初始上下文去修改文件，目的是诱发 old_text 不匹配的错误。
+    prompt = """
+    我当前目录下有一个 auth.go 文件。
+    请修改 auth.go 中的 login 函数。
+    请直接使用 edit_file 工具替换下面的代码块，将判断条件改为同时允许"admin"、"root"和"guest"三种用户登录：
 
-    # 将用户的 Prompt 压入 Session
-    sess.append(Message(role=Role.USER, content=args.prompt))
+    // 鉴权入口函数
+    func login(user string) bool {
+        // 检查用户名
+        if user == "admin" {
+            return true
+        }
+        return false
+    }
+"""
+
+    logger.info("\n>>> 🚀 启动自愈测试任务...")
+    sess.append(Message(role=Role.USER, content=prompt))
 
     try:
         eng.run(sess, reporter)

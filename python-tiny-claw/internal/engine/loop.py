@@ -6,6 +6,7 @@ from typing import Optional
 
 from internal.context.compactor import Compactor
 from internal.context.composer import PromptComposer
+from internal.context.recovery import RecoveryManager
 from internal.context.session import Session
 from internal.engine.reporter import Reporter
 from internal.provider.interface import LLMProvider
@@ -30,6 +31,7 @@ class AgentEngine:
         self.enable_thinking = enable_thinking
         self.plan_mode = plan_mode  # 【新增】暴露给外部的计划模式开关
         self.compactor = Compactor(max_chars=3000, retain_last_msgs=6)
+        self.recovery = RecoveryManager()  # 【新增】自愈管理器
 
     def run(self, session: Session, reporter: Optional[Reporter] = None) -> None:
         """【核心改造】: 移除 user_prompt 参数，改为接收一个具体的 Session 实例
@@ -62,6 +64,8 @@ class AgentEngine:
             compacted_context = self.compactor.compact(context_history)
 
             # 3. 后续的 Provider.Generate 全面使用被保护过的新鲜上下文 (compacted_context)
+            current_turn_thinking_content = ""
+
             # ================= Phase 1: Thinking =================
             if self.enable_thinking:
                 if reporter is not None:
@@ -69,16 +73,20 @@ class AgentEngine:
 
                 think_resp = self.provider.generate(compacted_context, None)
                 if think_resp.content:
-                    session.append(think_resp)
+                    current_turn_thinking_content = think_resp.content
                     compacted_context.append(think_resp)
 
             # ================= Phase 2: Action =================
             action_resp = self.provider.generate(compacted_context, available_tools)
 
-            # 【驾驭精髓】：注意，写入 Session（硬盘/全量内存）的永远是全量的真实响应，不受 Compact 影响！
-            # Compact 只作用于本轮发给大模型的那个临时 Context。
-            session.append(action_resp)
-            compacted_context.append(action_resp)
+            # (合并为合法的单条 Assistant 消息)
+            combined_content = (current_turn_thinking_content + "\n" + action_resp.content).strip()
+            final_assistant_msg = Message(
+                role=Role.ASSISTANT,
+                content=combined_content,
+                tool_calls=action_resp.tool_calls,
+            )
+            session.append(final_assistant_msg)
 
             if action_resp.content and reporter is not None:
                 reporter.on_message(action_resp.content)
@@ -86,7 +94,7 @@ class AgentEngine:
             if not action_resp.tool_calls:
                 break
 
-            # ================= 并发执行底层工具 =================
+            # ================= 执行工具并注入自愈模板 =================
             observation_msgs: list[Message | None] = [None] * len(action_resp.tool_calls)
 
             def _execute_tool(idx: int, call):
@@ -95,15 +103,25 @@ class AgentEngine:
 
                 result = self.registry.execute(call)
 
+                # 【核心拦截与注入】
+                final_output = result.output
+                if result.is_error:
+                    # 发生错误，交由 RecoveryManager 诊断并注入"锦囊妙计"
+                    final_output = self.recovery.analyze_and_inject(call.name, result.output)
+                    logger.info("  -> [Py-%d] ❌ 注入救援指南: %s", idx, final_output)
+                else:
+                    logger.info("  -> [Py-%d] ✅ 工具执行成功 (返回 %d 字节)", idx, len(result.output))
+
                 if reporter is not None:
-                    display_output = result.output
+                    display_output = final_output
                     if len(display_output) > 200:
                         display_output = display_output[:200] + "... (已截断)"
                     reporter.on_tool_result(call.name, display_output, result.is_error)
 
+                # 将注入过 Recovery Hint 的最终结果写入上下文历史
                 observation_msgs[idx] = Message(
                     role=Role.USER,
-                    content=result.output,
+                    content=final_output,
                     tool_call_id=call.id,
                 )
                 return idx
