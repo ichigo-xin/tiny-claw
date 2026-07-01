@@ -20,7 +20,8 @@ type AgentEngine struct {
 	EnableThinking bool
 	PlanMode       bool
 	compactor      *ctxpkg.Compactor
-	recovery       *ctxpkg.RecoveryManager // 【新增】自愈管理器
+	recovery       *ctxpkg.RecoveryManager
+	injector       *ReminderInjector // 【新增】提醒注入器
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
@@ -30,7 +31,8 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 		EnableThinking: enableThinking,
 		PlanMode:       planMode,
 		compactor:      ctxpkg.NewCompactor(20000, 6),
-		recovery:       ctxpkg.NewRecoveryManager(), // 初始化 Recovery
+		recovery:       ctxpkg.NewRecoveryManager(),
+		injector:       NewReminderInjector(), // 【初始化注入器】
 	}
 }
 
@@ -56,7 +58,6 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 			if reporter != nil {
 				reporter.OnThinking(ctx)
 			}
-
 			thinkResp, err := e.provider.Generate(ctx, compactedContext, nil)
 			if err != nil {
 				return fmt.Errorf("Thinking 阶段失败: %w", err)
@@ -73,7 +74,6 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 			return fmt.Errorf("Action 阶段失败: %w", err)
 		}
 
-		// (上一讲修复 1214 的关键代码：合并为合法的单条 Assistant 消息)
 		finalAssistantMsg := schema.Message{
 			Role:      schema.RoleAssistant,
 			Content:   strings.TrimSpace(currentTurnThinkingContent + "\n" + actionResp.Content),
@@ -89,13 +89,17 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 			break
 		}
 
-		// ================= 执行工具并注入自愈模板 =================
+		// ================= 执行工具并记录 =================
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 		var wg sync.WaitGroup
 
+		// 用于收集本轮执行的最后一个工具，供 Reminder 探测器分析
+		// (在真实的工业级架构中，如果并发调用了多个工具，我们可以逐个分析或仅分析报错的那个。这里简化为取第一个)
+		var lastToolCall schema.ToolCall
+		var lastToolResult schema.ToolResult
+
 		for i, toolCall := range actionResp.ToolCalls {
 			wg.Add(1)
-
 			go func(idx int, call schema.ToolCall) {
 				defer wg.Done()
 
@@ -103,17 +107,11 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 					reporter.OnToolCall(ctx, call.Name, string(call.Arguments))
 				}
 
-				// 底层物理执行工具
 				result := e.registry.Execute(ctx, call)
 
-				// 【核心拦截与注入】
 				finalOutput := result.Output
 				if result.IsError {
-					// 发生错误，交由 RecoveryManager 诊断并注入“锦囊妙计”
 					finalOutput = e.recovery.AnalyzeAndInject(call.Name, result.Output)
-					log.Printf("  -> [Go-%d] ❌ 注入救援指南: %s\n", idx, finalOutput)
-				} else {
-					log.Printf("  -> [Go-%d] ✅ 工具执行成功 (返回 %d 字节)\n", idx, len(result.Output))
 				}
 
 				if reporter != nil {
@@ -124,17 +122,31 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 					reporter.OnToolResult(ctx, call.Name, displayOutput, result.IsError)
 				}
 
-				// 将注入过 Recovery Hint 的最终结果写入上下文历史
 				observationMsgs[idx] = schema.Message{
 					Role:       schema.RoleUser,
 					Content:    finalOutput,
 					ToolCallID: call.ID,
 				}
+
+				// 捕获状态供外部探测器使用
+				if idx == 0 {
+					lastToolCall = call
+					lastToolResult = result
+				}
 			}(i, toolCall)
 		}
-
 		wg.Wait()
+
+		// 1. 先将普通的工具执行结果存入 Session
 		session.Append(observationMsgs...)
+
+		// 2. 【核心防线】：在准备进入下一轮之前，进行死循环探测！
+		reminderMsg := e.injector.CheckAndInject(lastToolCall, lastToolResult)
+		if reminderMsg != nil {
+			// 如果触发了干预规则，将这条严厉的提醒作为 User 消息，强制追加到 Session 的最末尾！
+			// 大模型在下一轮被唤醒时，第一眼就会看到这句话，从而打破局部执念。
+			session.Append(*reminderMsg)
+		}
 	}
 
 	return nil

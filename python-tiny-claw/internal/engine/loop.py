@@ -9,8 +9,9 @@ from internal.context.composer import PromptComposer
 from internal.context.recovery import RecoveryManager
 from internal.context.session import Session
 from internal.engine.reporter import Reporter
+from internal.engine.reminder import ReminderInjector, new_reminder_injector
 from internal.provider.interface import LLMProvider
-from internal.schema.message import Message, Role
+from internal.schema.message import Message, Role, ToolCall, ToolResult
 from internal.tools.registry import RegistryImpl as Registry
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class AgentEngine:
         self.plan_mode = plan_mode  # 【新增】暴露给外部的计划模式开关
         self.compactor = Compactor(max_chars=3000, retain_last_msgs=6)
         self.recovery = RecoveryManager()  # 【新增】自愈管理器
+        self.injector = new_reminder_injector()  # 【新增】提醒注入器
 
     def run(self, session: Session, reporter: Optional[Reporter] = None) -> None:
         """【核心改造】: 移除 user_prompt 参数，改为接收一个具体的 Session 实例
@@ -97,11 +99,20 @@ class AgentEngine:
             # ================= 执行工具并注入自愈模板 =================
             observation_msgs: list[Message | None] = [None] * len(action_resp.tool_calls)
 
+            last_tool_call: ToolCall | None = None
+            last_tool_result: ToolResult | None = None
+
             def _execute_tool(idx: int, call):
+                nonlocal last_tool_call, last_tool_result
+
                 if reporter is not None:
                     reporter.on_tool_call(call.name, call.arguments)
 
                 result = self.registry.execute(call)
+
+                if idx == 0:
+                    last_tool_call = call
+                    last_tool_result = result
 
                 # 【核心拦截与注入】
                 final_output = result.output
@@ -136,3 +147,9 @@ class AgentEngine:
 
             # 将全量观测结果持久化到 Session 中
             session.append(*[m for m in observation_msgs if m is not None])
+
+            # 【核心防线】：在准备进入下一轮之前，进行死循环探测！
+            if last_tool_call is not None and last_tool_result is not None:
+                reminder_msg = self.injector.check_and_inject(last_tool_call, last_tool_result)
+                if reminder_msg is not None:
+                    session.append(reminder_msg)
