@@ -8,8 +8,10 @@ import (
 	"os"
 	"strings"
 
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 	ctxpkg "github.com/yourname/go-tiny-claw/internal/context"
 	"github.com/yourname/go-tiny-claw/internal/engine"
 	"github.com/yourname/go-tiny-claw/internal/schema"
@@ -91,6 +93,49 @@ func (b *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
 
 func (b *FeishuBot) Reporter() *FeishuReporter {
 	return b.r
+}
+
+func (b *FeishuBot) Start(ctx context.Context) error {
+	eventHandler := dispatcher.NewEventDispatcher("", "").
+		OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
+			contentStr := *event.Event.Message.Content
+			contentStr = strings.TrimPrefix(contentStr, `{"text":"`)
+			contentStr = strings.TrimSuffix(contentStr, `"}`)
+
+			chatId := *event.Event.Message.ChatId
+			log.Printf("[Feishu] 收到会话 %s 消息: %s\n", chatId, contentStr)
+
+			if strings.HasPrefix(contentStr, "approve ") {
+				taskID := strings.TrimPrefix(contentStr, "approve ")
+				taskID = strings.TrimSpace(taskID)
+				GlobalApprovalMgr.ResolveApproval(taskID, true, "人类管理员已批准操作")
+				log.Printf("[Feishu] 会话 %s: ✅ 已为您批准任务 %s", chatId, taskID)
+				return nil
+			}
+			if strings.HasPrefix(contentStr, "reject ") {
+				taskID := strings.TrimPrefix(contentStr, "reject ")
+				taskID = strings.TrimSpace(taskID)
+				GlobalApprovalMgr.ResolveApproval(taskID, false, "人类管理员认为该操作存在极高风险，已无情拒绝")
+				log.Printf("[Feishu] 会话 %s: 🚫 已拒绝任务 %s", chatId, taskID)
+				return nil
+			}
+
+			go b.handleAgentRun(chatId, contentStr)
+
+			return nil
+		}).
+		OnP2MessageReadV1(func(ctx context.Context, event *larkim.P2MessageReadV1) error {
+			return nil
+		})
+
+	cli := larkws.NewClient(b.appID, b.appSecret,
+		larkws.WithEventHandler(eventHandler),
+		larkws.WithLogLevel(larkcore.LogLevelDebug),
+	)
+
+	log.Println("🚀 go-tiny-claw 正在通过长连接（WebSocket）方式连接飞书...")
+
+	return cli.Start(ctx)
 }
 
 func (b *FeishuBot) handleAgentRun(chatId string, prompt string) {

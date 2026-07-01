@@ -8,8 +8,11 @@ import uuid
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
 
+from internal.context.session import Session
 from internal.engine.loop import AgentEngine
 from internal.engine.reporter import Reporter
+from internal.feishu.approval import get_global_approval_mgr
+from internal.schema.message import Message, Role
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +20,7 @@ logger = logging.getLogger(__name__)
 class FeishuBot:
     """封装了飞书机器人的配置与核心业务流"""
 
-    def __init__(self, app_id: str, app_secret: str, eng: AgentEngine):
+    def __init__(self, app_id: str, app_secret: str, eng: AgentEngine, sess: Session):
         self.client = lark.Client.builder() \
             .app_id(app_id) \
             .app_secret(app_secret) \
@@ -26,6 +29,11 @@ class FeishuBot:
         self.app_id = app_id
         self.app_secret = app_secret
         self.engine = eng
+        self.session = sess
+        self._reporter = None
+
+    def reporter(self) -> FeishuReporter | None:
+        return self._reporter
 
     def start(self) -> None:
         """通过长连接（WebSocket）方式启动飞书事件监听，无需公网 IP 和内网穿透"""
@@ -37,14 +45,29 @@ class FeishuBot:
 
             # 解析飞书消息内容：{"text": "用户消息"}
             content_str = content_str.strip()
+            text = content_str
             try:
                 content_json = json.loads(content_str)
-                text = content_json.get("text", content_str)
+                if "text" in content_json:
+                    text = content_json["text"].strip()
             except json.JSONDecodeError:
-                text = content_str
+                pass
 
             chat_id = data.event.message.chat_id
             logger.info("[Feishu] 收到会话 %s 消息: %s", chat_id, text)
+
+            # 拦截人工审批的特殊口令
+            if text.startswith("approve "):
+                task_id = text[len("approve "):].strip()
+                get_global_approval_mgr().resolve_approval(task_id, True, "人类管理员已批准操作")
+                logger.info("[Feishu] 会话 %s: ✅ 已为您批准任务 %s", chat_id, task_id)
+                return
+
+            if text.startswith("reject "):
+                task_id = text[len("reject "):].strip()
+                get_global_approval_mgr().resolve_approval(task_id, False, "人类管理员认为该操作存在极高风险，已无情拒绝")
+                logger.info("[Feishu] 会话 %s: 🚫 已拒绝任务 %s", chat_id, task_id)
+                return
 
             # 在新线程中处理，避免阻塞飞书 SDK 的事件处理
             t = threading.Thread(target=self._handle_agent_run, args=(chat_id, text))
@@ -72,11 +95,13 @@ class FeishuBot:
     def _handle_agent_run(self, chat_id: str, prompt: str) -> None:
         """连接飞书与底层引擎的桥梁"""
         reporter = FeishuReporter(client=self.client, chat_id=chat_id)
+        self._reporter = reporter
 
         try:
-            self.engine.run(prompt, reporter)
+            self.session.append(Message(role=Role.USER, content=prompt))
+            self.engine.run(self.session, reporter)
         except Exception as e:
-            reporter.send_msg(f"Agent 运行崩溃: {e}")
+            reporter.send_msg(f"❌ Agent 运行崩溃: {e}")
 
 
 class FeishuReporter(Reporter):

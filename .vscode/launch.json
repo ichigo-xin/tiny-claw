@@ -1,0 +1,49 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch go-tiny-claw",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/go-tiny-claw/cmd/claw/main.go",
+            "envFile": "${workspaceFolder}/go-tiny-claw/.env",
+            "env": {
+                "GO111MODULE": "on",
+                "CGO_ENABLED": "0"
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}/go-tiny-claw",
+            "showLog": true,
+            "buildFlags": "-v",
+            "preLaunchTask": "",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python: Terminal Mode",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/python-tiny-claw/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/python-tiny-claw",
+            "python": "${workspaceFolder}/python-tiny-claw/.venv/Scripts/python.exe",
+            "envFile": "${workspaceFolder}/python-tiny-claw/.env",
+            "env": {
+                "PYTHONIOENCODING": "utf-8"
+            }
+        },
+        {
+            "name": "Python: Feishu Mode",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/python-tiny-claw/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/python-tiny-claw",
+            "python": "${workspaceFolder}/python-tiny-claw/.venv/Scripts/python.exe",
+            "envFile": "${workspaceFolder}/python-tiny-claw/.env",
+            "env": {
+                "PYTHONIOENCODING": "utf-8"
+            }
+        }
+    ]
+}

@@ -67,12 +67,32 @@ func (m *ApprovalManager) ResolveApproval(taskID string, allowed bool, reason st
 }
 
 func IsDangerousCommand(toolName string, args string) bool {
-	if toolName != "bash" && toolName != "write_file" && toolName != "edit_file" {
+	if toolName != "bash" && toolName != "powershell" && toolName != "write_file" && toolName != "edit_file" {
 		return false
 	}
 
 	if toolName == "bash" {
 		dangerousPatterns := []string{`rm\s+-r`, `sudo\s+`, `drop\s+`, `>.*\.go`}
+		for _, p := range dangerousPatterns {
+			if matched, _ := regexp.MatchString(p, args); matched {
+				return true
+			}
+		}
+	}
+
+	if toolName == "powershell" {
+		dangerousPatterns := []string{
+			`rm\s+-r`,
+			`rm\s+-rf`,
+			`Remove-Item`,
+			`rmdir`,
+			`del\s+`,
+			`erase\s+`,
+			`format\s+`,
+			`sudo\s+`,
+			`drop\s+`,
+			`>.*\.go`,
+		}
 		for _, p := range dangerousPatterns {
 			if matched, _ := regexp.MatchString(p, args); matched {
 				return true

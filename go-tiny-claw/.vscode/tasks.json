@@ -1,0 +1,57 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "go build",
+			"type": "shell",
+			"command": "go build -v ./...",
+			"args": [],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"problemMatcher": "$go",
+			"detail": "Build Go project"
+		},
+		{
+			"label": "go test",
+			"type": "shell",
+			"command": "go test -v ./...",
+			"args": [],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"group": {
+				"kind": "test",
+				"isDefault": true
+			},
+			"problemMatcher": "$go",
+			"detail": "Run all tests"
+		},
+		{
+			"label": "go vet",
+			"type": "shell",
+			"command": "go vet ./...",
+			"args": [],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": "$go",
+			"detail": "Run go vet"
+		},
+		{
+			"label": "go fmt",
+			"type": "shell",
+			"command": "go fmt ./...",
+			"args": [],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": [],
+			"detail": "Format Go code"
+		}
+	]
+}

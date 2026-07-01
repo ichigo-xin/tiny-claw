@@ -41,6 +41,12 @@ class RegistryImpl(ABC):
 
     def __init__(self):
         self.tools: dict[str, BaseTool] = {}
+        self.middlewares: list = []
+
+    def use(self, middleware) -> None:
+        """注册一个中间件，在工具执行前被调用"""
+        self.middlewares.append(middleware)
+        logger.info("[Registry] 成功注册中间件")
 
     def register(self, tool: BaseTool) -> None:
         """挂载一个新的工具到系统中"""
@@ -56,6 +62,15 @@ class RegistryImpl(ABC):
 
     def execute(self, call: ToolCall) -> ToolResult:
         """实际路由并执行模型请求的工具调用"""
+        for middleware in self.middlewares:
+            allowed, reason = middleware(call)
+            if not allowed:
+                return ToolResult(
+                    tool_call_id=call.id,
+                    output=reason,
+                    is_error=True,
+                )
+
         tool = self.tools.get(call.name)
         if not tool:
             err_msg = f"Error: 系统中不存在名为 '{call.name}' 的工具。"

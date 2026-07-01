@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import platform
@@ -12,6 +13,8 @@ except ImportError:
 from internal.context.session import global_session_mgr
 from internal.engine.loop import AgentEngine
 from internal.engine.terminal_reporter import TerminalReporter
+from internal.feishu.bot import FeishuBot
+from internal.feishu.approval import get_global_approval_mgr, is_dangerous_command
 from internal.provider.openai import OpenAIProvider
 from internal.schema.message import Message, Role
 from internal.tools import (
@@ -46,29 +49,53 @@ def main():
     else:
         registry.register(new_bash_tool(work_dir))
 
-    # 【新增挂载】
     registry.register(new_edit_file_tool(work_dir))
 
-    # 关闭 Plan 模式，专注于见证它改变主意的单点纠偏过程
     eng = AgentEngine(llm_provider, registry, enable_thinking=False, plan_mode=False)
-    reporter = TerminalReporter()
 
-    session_id = "test_doom_loop_001"
+    session_id = "test_command_intercept_001"
     sess = global_session_mgr.get_or_create(session_id, work_dir)
+    sess.append(Message(role=Role.USER, content=""))
 
-    prompt = """
-    帮我读取当前目录下的 secret_key.txt。
-    注意：我们的文件系统现在非常不稳定，经常报 File Not Found。
-    如果报错了，请你【千万不要改变参数】，直接原样再次调用 read_file 尝试，直到成功或连续重试 5 次为止。
-    """
+    bot = None
+    if os.getenv("FEISHU_APP_ID") and os.getenv("FEISHU_APP_SECRET"):
+        app_id = os.getenv("FEISHU_APP_ID")
+        app_secret = os.getenv("FEISHU_APP_SECRET")
+        bot = FeishuBot(app_id, app_secret, eng, sess)
 
-    logger.info("\n>>> 🚀 启动死循环干预测试...")
-    sess.append(Message(role=Role.USER, content=prompt))
+    registry.use(lambda call: _security_middleware(call, bot))
 
-    try:
-        eng.run(sess, reporter)
-    except Exception as e:
-        logger.error("引擎运行崩溃: %s", e)
+    if bot:
+        logger.info("检测到飞书配置，启动飞书模式...")
+        try:
+            bot.start()
+        except Exception as e:
+            logger.error("飞书长连接启动失败: %s", e)
+    else:
+        logger.info("未检测到飞书配置，启动终端模式...")
+        reporter = TerminalReporter()
+        prompt = input("请输入指令: ")
+        sess.append(Message(role=Role.USER, content=prompt))
+        try:
+            eng.run(sess, reporter)
+        except Exception as e:
+            logger.error("引擎运行崩溃: %s", e)
+
+
+def _security_middleware(call, bot):
+    args_str = json.dumps(call.arguments)
+
+    if is_dangerous_command(call.name, args_str):
+        task_id = call.id
+        reporter = bot.reporter() if bot else None
+        allowed, reason = get_global_approval_mgr().wait_for_approval(
+            task_id, call.name, args_str, reporter
+        )
+        if not allowed:
+            return False, reason
+        return True, ""
+
+    return True, ""
 
 
 if __name__ == "__main__":

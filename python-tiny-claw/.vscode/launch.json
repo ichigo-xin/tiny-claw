@@ -2,10 +2,38 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: main.py",
+            "name": "Python: Terminal Mode",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "env": {
+                "PYTHONIOENCODING": "utf-8",
+                "ZHIPU_API_KEY": "${env:ZHIPU_API_KEY}"
+            }
+        },
+        {
+            "name": "Python: Feishu Mode",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "env": {
+                "PYTHONIOENCODING": "utf-8",
+                "ZHIPU_API_KEY": "${env:ZHIPU_API_KEY}",
+                "FEISHU_APP_ID": "${env:FEISHU_APP_ID}",
+                "FEISHU_APP_SECRET": "${env:FEISHU_APP_SECRET}"
+            }
+        },
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/Scripts/python.exe",
