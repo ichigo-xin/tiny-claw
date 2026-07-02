@@ -11,7 +11,6 @@ import (
 	"github.com/joho/godotenv"
 	ctxpkg "github.com/yourname/go-tiny-claw/internal/context"
 	"github.com/yourname/go-tiny-claw/internal/engine"
-	"github.com/yourname/go-tiny-claw/internal/feishu"
 	"github.com/yourname/go-tiny-claw/internal/provider"
 	"github.com/yourname/go-tiny-claw/internal/schema"
 	"github.com/yourname/go-tiny-claw/internal/tools"
@@ -31,49 +30,52 @@ func main() {
 
 	workDir, _ := os.Getwd()
 	workDir += "/workspace"
+
 	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewReadFileTool(workDir))
-	registry.Register(tools.NewWriteFileTool(workDir))
+	reporter := engine.NewTerminalReporter()
+
+	// 【防御沙箱】为子智能体准备受限的只读注册表
+	readOnlyRegistry := tools.NewRegistry()
+	readOnlyRegistry.Register(tools.NewReadFileTool(workDir))
 	// 根据操作系统注册对应的命令执行工具
 	if runtime.GOOS == "windows" {
-		registry.Register(tools.NewPowerShellTool(workDir))
+		readOnlyRegistry.Register(tools.NewPowerShellTool(workDir))
 	} else {
-		registry.Register(tools.NewBashTool(workDir))
+		readOnlyRegistry.Register(tools.NewBashTool(workDir))
 	}
 
-	// 【新增挂载】
-	registry.Register(tools.NewEditFileTool(workDir))
-	eng := engine.NewAgentEngine(llmProvider, registry, false, false)
+	// 为主智能体准备全功能注册表
+	mainRegistry := tools.NewRegistry()
+	mainRegistry.Register(tools.NewReadFileTool(workDir))
+	mainRegistry.Register(tools.NewWriteFileTool(workDir))
+	mainRegistry.Register(tools.NewEditFileTool(workDir))
+	if runtime.GOOS == "windows" {
+		mainRegistry.Register(tools.NewPowerShellTool(workDir))
+	} else {
+		mainRegistry.Register(tools.NewBashTool(workDir))
+	}
 
-	// 假设一个bot绑定一个session
-	sessionID := "test_command_intercept_001"
+	// 初始化主引擎
+	eng := engine.NewAgentEngine(llmProvider, mainRegistry, false, false)
+
+	// 【核心装配】：将带有 Engine 引用和只读 Registry 的 Subagent 工具注册进主线
+	mainRegistry.Register(tools.NewSubagentTool(eng, readOnlyRegistry, reporter))
+
+	sessionID := "test_subagent_001"
 	sess := ctxpkg.GlobalSessionMgr.GetOrCreate(sessionID, workDir)
-	sess.Append(schema.Message{Role: schema.RoleUser, Content: ""})
 
-	bot := feishu.NewFeishuBot(eng, sess)
+	prompt := `
+	我需要你在这个遗留项目里，找到那个“核心密码”。
+	为了防止污染主上下文，请你务必派出子智能体（spawn_subagent）去执行探索任务。
+	你可以让子智能体使用 bash 去查找当前目录（及其所有子目录）下名为 config.txt 的文件。
+	子智能体拿到密码向你汇报后，请你亲自使用 write_file 工具，将密码写在根目录的 answer.txt 里。
+	`
 
-	// 【核心注入】注册安全拦截 Middleware
-	registry.Use(func(ctx context.Context, call schema.ToolCall) (bool, string) {
-		argsStr := string(call.Arguments)
+	log.Println("\n>>> 🚀 启动多智能体协同测试...")
+	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
 
-		if feishu.IsDangerousCommand(call.Name, argsStr) {
-			taskID := call.ID
-
-			allowed, reason := feishu.GlobalApprovalMgr.WaitForApproval(taskID, call.Name, argsStr, bot.Reporter())
-
-			if !allowed {
-				return false, reason
-			}
-			return true, ""
-		}
-
-		return true, ""
-	})
-
-	// 使用 WebSocket 长连接方式启动飞书机器人（无需公网 IP）
-	err := bot.Start(context.Background())
+	err := eng.Run(context.Background(), sess, reporter)
 	if err != nil {
-		log.Fatalf("飞书长连接启动失败: %v", err)
+		log.Fatalf("引擎运行崩溃: %v", err)
 	}
 }
