@@ -5,7 +5,7 @@ import os
 from openai import OpenAI
 
 from internal.provider.interface import LLMProvider
-from internal.schema.message import Message, Role, ToolCall, ToolDefinition
+from internal.schema.message import Message, Role, ToolCall, ToolDefinition, Usage
 
 
 class OpenAIProvider(LLMProvider):
@@ -87,6 +87,12 @@ class OpenAIProvider(LLMProvider):
             role=Role.ASSISTANT,
             content=choice.message.content or "",
         )
+
+        if resp.usage and (resp.usage.prompt_tokens > 0 or resp.usage.completion_tokens > 0):
+            result_msg.usage = Usage(
+                prompt_tokens=resp.usage.prompt_tokens,
+                completion_tokens=resp.usage.completion_tokens,
+            )
 
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:

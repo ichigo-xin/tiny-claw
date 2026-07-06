@@ -12,6 +12,7 @@ except ImportError:
 from internal.context.session import global_session_mgr
 from internal.engine.loop import AgentEngine
 from internal.engine.terminal_reporter import TerminalReporter
+from internal.observability.tracker import CostTracker
 from internal.provider.openai import OpenAIProvider
 from internal.schema.message import Message, Role
 from internal.tools import (
@@ -37,19 +38,22 @@ def main():
 
     work_dir = str(Path(__file__).resolve().parent) + "/workspace"
 
-    llm_provider = OpenAIProvider("glm-4.5-air")
+    model_name = "glm-4.5-air"
+    llm_provider = OpenAIProvider(model_name)
     reporter = TerminalReporter()
 
-    # 【防御沙箱】为子智能体准备受限的只读注册表
+    session_id = "test_observability_001"
+    sess = global_session_mgr.get_or_create(session_id, work_dir)
+
+    tracked_provider = CostTracker(llm_provider, model_name, sess)
+
     read_only_registry = new_registry()
     read_only_registry.register(new_read_file_tool(work_dir))
-    # 根据操作系统注册对应的命令执行工具
     if platform.system() == "Windows":
         read_only_registry.register(new_powershell_tool(work_dir))
     else:
         read_only_registry.register(new_bash_tool(work_dir))
 
-    # 为主智能体准备全功能注册表
     main_registry = new_registry()
     main_registry.register(new_read_file_tool(work_dir))
     main_registry.register(new_write_file_tool(work_dir))
@@ -59,14 +63,9 @@ def main():
     else:
         main_registry.register(new_bash_tool(work_dir))
 
-    # 初始化主引擎
-    eng = AgentEngine(llm_provider, main_registry, enable_thinking=False, plan_mode=False)
+    eng = AgentEngine(tracked_provider, main_registry, enable_thinking=False, plan_mode=False)
 
-    # 【核心装配】：将带有 Engine 引用和只读 Registry 的 Subagent 工具注册进主线
     main_registry.register(new_subagent_tool(eng, read_only_registry, reporter))
-
-    session_id = "test_subagent_001"
-    sess = global_session_mgr.get_or_create(session_id, work_dir)
 
     prompt = """
 我需要你在这个遗留项目里，找到那个"核心密码"。
@@ -75,13 +74,20 @@ def main():
 子智能体拿到密码向你汇报后，请你亲自使用 write_file 工具，将密码写在根目录的 answer.txt 里。
 """
 
-    logger.info("\n>>> 🚀 启动多智能体协同测试...")
+    logger.info("\n>>> 🚀 启动带仪表盘的可观测性测试...")
     sess.append(Message(role=Role.USER, content=prompt))
 
     try:
         eng.run(sess, reporter)
     except Exception as e:
         logger.error("引擎运行崩溃: %s", e)
+
+    logger.info("\n================ 财务报表 ================")
+    logger.info("会话 ID: %s", sess.id)
+    logger.info("总消耗 Input Tokens: %d", sess.total_prompt_tokens)
+    logger.info("总消耗 Output Tokens: %d", sess.total_completion_tokens)
+    logger.info("总计费用 (CNY): ¥%.6f", sess.total_cost_cny)
+    logger.info("===========================================")
 
 
 if __name__ == "__main__":

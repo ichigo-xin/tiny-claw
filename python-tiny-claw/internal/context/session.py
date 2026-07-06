@@ -17,8 +17,19 @@ class Session:
         self.created_at: float = time.time()
         self.updated_at: float = time.time()
 
+        self.total_prompt_tokens: int = 0
+        self.total_completion_tokens: int = 0
+        self.total_cost_cny: float = 0.0
+
         self._history: list[Message] = []
         self._lock = threading.RLock()
+
+    def record_usage(self, prompt: int, completion: int, cost: float) -> None:
+        """用于统计该 Session 累计消耗的资源"""
+        with self._lock:
+            self.total_prompt_tokens += prompt
+            self.total_completion_tokens += completion
+            self.total_cost_cny += cost
 
     def append(self, *msgs: Message) -> None:
         """线程安全地向 Session 中追加消息"""

@@ -39,8 +39,15 @@ class ToolDefinition:
 
 
 @dataclass
+class Usage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+@dataclass
 class Message:
     role: Role
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_id: str = ""
+    usage: Usage | None = None
