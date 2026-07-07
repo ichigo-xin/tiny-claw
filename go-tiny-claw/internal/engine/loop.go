@@ -1,4 +1,3 @@
-// internal/engine/loop.go
 package engine
 
 import (
@@ -9,6 +8,7 @@ import (
 	"sync"
 
 	ctxpkg "github.com/yourname/go-tiny-claw/internal/context"
+	"github.com/yourname/go-tiny-claw/internal/observability"
 	"github.com/yourname/go-tiny-claw/internal/provider"
 	"github.com/yourname/go-tiny-claw/internal/schema"
 	"github.com/yourname/go-tiny-claw/internal/tools"
@@ -39,10 +39,28 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter Reporter) error {
 	log.Printf("[Engine] 唤醒会话 [%s]，锁定工作区: %s (PlanMode: %v)\n", session.ID, session.WorkDir, e.PlanMode)
 
+	// 【埋点 1】：开启 Root Span，记录整个任务的生命周期
+	ctx, rootSpan := observability.StartSpan(ctx, "Agent.Run")
+	rootSpan.AddAttribute("SessionID", session.ID)
+	rootSpan.AddAttribute("WorkDir", session.WorkDir)
+
+	// defer 保证在引擎退出时，无论成功失败，都能结束根 Span 并导出 Trace 报告
+	defer func() {
+		rootSpan.EndSpan()
+		_ = observability.ExportTraceToFile(rootSpan, session.WorkDir, session.ID)
+		log.Printf("📊 [Tracing] 本次任务的执行回放链路已保存至工作区的 .claw/traces 目录下\n")
+	}()
+
 	composer := ctxpkg.NewPromptComposer(session.WorkDir, e.PlanMode)
 	systemMsg := composer.Build()
 
+	turnCount := 0
 	for {
+		turnCount++
+		// 【埋点 2】：记录单次 Turn 循环
+		turnCtx, turnSpan := observability.StartSpan(ctx, fmt.Sprintf("Turn-%d", turnCount))
+		defer turnSpan.EndSpan() // 利用 defer，哪怕遇到了 break 或 error 也会计算耗时
+
 		availableTools := e.registry.GetAvailableTools()
 		workingMemory := session.GetWorkingMemory(20)
 
@@ -51,14 +69,22 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 		contextHistory = append(contextHistory, workingMemory...)
 		compactedContext := e.compactor.Compact(contextHistory)
 
+		// 记录发给模型的实际上下文大小，非常有助于排查幻觉
+		turnSpan.AddAttribute("context_message_count", len(compactedContext))
+
 		var currentTurnThinkingContent string
 
-		// ================= Phase 1: Thinking =================
+		// Phase 1: Thinking
 		if e.EnableThinking {
 			if reporter != nil {
-				reporter.OnThinking(ctx)
+				reporter.OnThinking(turnCtx) // 传递带有 trace 的 turnCtx
 			}
-			thinkResp, err := e.provider.Generate(ctx, compactedContext, nil)
+
+			// 【埋点 3】：记录 Thinking 调用
+			thinkCtx, thinkSpan := observability.StartSpan(turnCtx, "LLM.Thinking")
+			thinkResp, err := e.provider.Generate(thinkCtx, compactedContext, nil)
+			thinkSpan.EndSpan() // 结束思考跨度
+
 			if err != nil {
 				return fmt.Errorf("Thinking 阶段失败: %w", err)
 			}
@@ -68,8 +94,13 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 			}
 		}
 
-		// ================= Phase 2: Action =================
-		actionResp, err := e.provider.Generate(ctx, compactedContext, availableTools)
+		// Phase 2: Action
+
+		// 【埋点 4】：记录 Action 调用
+		actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
+		actionResp, err := e.provider.Generate(actCtx, compactedContext, availableTools)
+		actSpan.EndSpan() // 结束行动跨度
+
 		if err != nil {
 			return fmt.Errorf("Action 阶段失败: %w", err)
 		}
@@ -89,17 +120,16 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 			break
 		}
 
-		// ================= 执行工具并记录 =================
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 		var wg sync.WaitGroup
 
-		// 用于收集本轮执行的最后一个工具，供 Reminder 探测器分析
-		// (在真实的工业级架构中，如果并发调用了多个工具，我们可以逐个分析或仅分析报错的那个。这里简化为取第一个)
+		// 用于收集本轮执行的最后一个工具供 Reminder 分析
 		var lastToolCall schema.ToolCall
 		var lastToolResult schema.ToolResult
 
 		for i, toolCall := range actionResp.ToolCalls {
 			wg.Add(1)
+
 			go func(idx int, call schema.ToolCall) {
 				defer wg.Done()
 
@@ -107,7 +137,9 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 					reporter.OnToolCall(ctx, call.Name, string(call.Arguments))
 				}
 
-				result := e.registry.Execute(ctx, call)
+				// 此时，传给 Registry 的 ctx 是带有当前 Turn 的上下文。
+				// 并且由于是并发执行，多个工具的 Span 会平行地挂在 Turn 节点下！
+				result := e.registry.Execute(turnCtx, call)
 
 				finalOutput := result.Output
 				if result.IsError {
@@ -128,31 +160,26 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 					ToolCallID: call.ID,
 				}
 
-				// 捕获状态供外部探测器使用
 				if idx == 0 {
 					lastToolCall = call
 					lastToolResult = result
 				}
 			}(i, toolCall)
 		}
+
 		wg.Wait()
 
-		// 1. 先将普通的工具执行结果存入 Session
 		session.Append(observationMsgs...)
 
-		// 2. 【核心防线】：在准备进入下一轮之前，进行死循环探测！
+		// 【核心防线】：在进入下一轮前，进行死循环探测与注入
 		reminderMsg := e.injector.CheckAndInject(lastToolCall, lastToolResult)
 		if reminderMsg != nil {
-			// 如果触发了干预规则，将这条严厉的提醒作为 User 消息，强制追加到 Session 的最末尾！
-			// 大模型在下一轮被唤醒时，第一眼就会看到这句话，从而打破局部执念。
 			session.Append(*reminderMsg)
 		}
 	}
 
 	return nil
 }
-
-// internal/engine/loop.go (续加在末尾)
 
 // RunSub 是专为 Subagent 拉起的一次性受限循环。
 // 它不依赖外部 Session，打完就跑。
